@@ -1,0 +1,4 @@
+# requirements.txt
+# Зависимости для Telegram бота
+
+pyTelegramBotAPI==4.14.0
