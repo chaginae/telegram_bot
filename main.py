@@ -14,6 +14,7 @@ import json
 from config import USERS_DB, CREATORS, MEETING_TIMES, MEETING_DURATIONS
 from database import db
 from auto_cleanup import cleanup
+from keep_alive import init_keep_alive
 from utils import (
     get_next_workdays, get_available_times, format_duration,
     get_end_time, format_participants_list
@@ -775,6 +776,9 @@ def main():
     # Запускаем автоочистку
     cleanup.start()
     logger.info("🧹 Автоочистка активирована - старые совещания удаляются каждый час")
+    init_keep_alive(interval=60)  # Пинг каждую минуту
+    logger.info("🔄 Keep-Alive активирован")
+
 
     # Создаем поток для бота
     bot_thread = threading.Thread(target=run_bot, daemon=True)
