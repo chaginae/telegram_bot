@@ -1,4 +1,3 @@
-database_render_no_disk.py
 # База данных для бота БЕЗ Persistent Disk (версия для Render.com)
 # БД хранится в /tmp (временная память, теряется при перезагрузке)
 
