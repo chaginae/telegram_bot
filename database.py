@@ -1,5 +1,6 @@
-# database_render.py
-# База данных для бота (версия для Render.com с поддержкой переменных окружения)
+database_render_no_disk.py
+# База данных для бота БЕЗ Persistent Disk (версия для Render.com)
+# БД хранится в /tmp (временная память, теряется при перезагрузке)
 
 import sqlite3
 import json
@@ -12,23 +13,23 @@ logger = logging.getLogger(__name__)
 
 
 class Database:
-    """Класс для работы с БД SQLite"""
+    """Класс для работы с БД SQLite (БЕЗ диска)"""
 
     def __init__(self):
         """Инициализация БД"""
-        # Получаем путь из переменных окружения или используем по умолчанию
-        db_path = os.getenv('DB_PATH', 'bot_database.db')
-
-        # Для Render создаем папку /var/data если не существует
-        if db_path.startswith('/var/data'):
-            Path('/var/data').mkdir(parents=True, exist_ok=True)
+        # БД в временной папке /tmp (Render автоматически очищает)
+        # При перезагрузке сервиса БД теряется
+        db_path = os.getenv('DB_PATH', '/tmp/bot_database.db')
 
         self.db_path = db_path
         self.connection = None
 
+        logger.warning(f"⚠️ БД БЕЗ ДИСКА: {self.db_path}")
+        logger.warning("⚠️ ВНИМАНИЕ: Данные теряются при перезагрузке сервиса!")
+
         # Инициализируем БД
         self._init_db()
-        logger.info(f"✅ БД инициализирована: {self.db_path}")
+        logger.info(f"✅ БД инициализирована (БЕЗ Persistent Disk)")
 
     def _get_connection(self):
         """Получить соединение с БД"""
@@ -381,12 +382,16 @@ class Database:
 
             db_size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
 
-            return {
+            info = {
                 'meetings': meetings_count,
                 'notifications': notifications_count,
                 'sessions': sessions_count,
-                'database_size': db_size
+                'database_size': db_size,
+                'storage': '❌ БЕЗ ДИСКА - данные теряются при перезагрузке!'
             }
+
+            logger.warning(f"⚠️ БД информация: {info}")
+            return info
         except Exception as e:
             logger.error(f"❌ Ошибка при получении информации о БД: {e}")
             return {}
