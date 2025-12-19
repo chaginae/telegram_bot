@@ -7,6 +7,7 @@ import os
 import logging
 from datetime import datetime
 from pathlib import Path
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class Database:
         db_path = os.getenv('DB_PATH', '/tmp/bot_database.db')
 
         self.db_path = db_path
-        self.connection = None
+        self.local = threading.local()  # ✅ Локальное хранилище для каждого потока
 
         logger.warning(f"⚠️ БД БЕЗ ДИСКА: {self.db_path}")
         logger.warning("⚠️ ВНИМАНИЕ: Данные теряются при перезагрузке сервиса!")
@@ -31,10 +32,15 @@ class Database:
         logger.info(f"✅ БД инициализирована (БЕЗ Persistent Disk)")
 
     def _get_connection(self):
-        """Получить соединение с БД"""
-        if self.connection is None:
-            self.connection = sqlite3.connect(self.db_path, timeout=10)
-        return self.connection
+        """Получить соединение с БД (для каждого потока своё)"""
+        # ✅ ИСПРАВЛЕНИЕ: Создаем новое соединение для каждого потока
+        if not hasattr(self.local, 'connection') or self.local.connection is None:
+            self.local.connection = sqlite3.connect(
+                self.db_path,
+                timeout=10,
+                check_same_thread=False  # ✅ Разрешаем использование в разных потоках
+            )
+        return self.local.connection
 
     def _init_db(self):
         """Инициализировать структуру БД"""
