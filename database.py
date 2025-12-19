@@ -1,336 +1,395 @@
-# database.py
-# Работа с базой данных SQLite
+# database_render.py
+# База данных для бота (версия для Render.com с поддержкой переменных окружения)
 
 import sqlite3
 import json
+import os
+import logging
 from datetime import datetime
-from contextlib import contextmanager
+from pathlib import Path
 
-DATABASE = "bot_database.db"
+logger = logging.getLogger(__name__)
 
 
 class Database:
-    def __init__(self, db_path=DATABASE):
+    """Класс для работы с БД SQLite"""
+
+    def __init__(self):
+        """Инициализация БД"""
+        # Получаем путь из переменных окружения или используем по умолчанию
+        db_path = os.getenv('DB_PATH', 'bot_database.db')
+
+        # Для Render создаем папку /var/data если не существует
+        if db_path.startswith('/var/data'):
+            Path('/var/data').mkdir(parents=True, exist_ok=True)
+
         self.db_path = db_path
-        self.init_db()
+        self.connection = None
 
-    @contextmanager
-    def get_connection(self):
-        """Контекстный менеджер для работы с БД"""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+        # Инициализируем БД
+        self._init_db()
+        logger.info(f"✅ БД инициализирована: {self.db_path}")
 
-    def init_db(self):
-        """Инициализация базы данных"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+    def _get_connection(self):
+        """Получить соединение с БД"""
+        if self.connection is None:
+            self.connection = sqlite3.connect(self.db_path, timeout=10)
+        return self.connection
 
-            # Таблица пользователей (сессии)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_sessions (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+    def _init_db(self):
+        """Инициализировать структуру БД"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
 
-            # Таблица совещаний
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS meetings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    creator_username TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    start_time TEXT NOT NULL,
-                    duration_minutes INTEGER NOT NULL,
-                    participants TEXT DEFAULT '[]',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        # Таблица пользователей и их сессий
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL,
+                login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
-            # Таблица уведомлений
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    meeting_id INTEGER NOT NULL,
-                    participant_username TEXT NOT NULL,
-                    is_read INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(meeting_id) REFERENCES meetings(id)
-                )
-            """)
+        # Таблица совещаний
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS meetings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                creator_username TEXT NOT NULL,
+                date TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                participants TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
-    # ======================== УПРАВЛЕНИЕ СЕССИЯМИ ========================
+        # Таблица уведомлений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meeting_id INTEGER NOT NULL,
+                participant_username TEXT NOT NULL,
+                read BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+            )
+        ''')
+
+        conn.commit()
+        logger.info("✅ Структура БД инициализирована")
+
+    # ======================== СЕССИИ ========================
 
     def add_user_session(self, user_id, username):
         """Добавить пользователя в сессию"""
-        with self.get_connection() as conn:
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
 
-            # Проверяем, нет ли уже сессии
-            cursor.execute("SELECT * FROM user_sessions WHERE user_id = ?", (user_id,))
+            # Проверяем, не в сессии ли уже
+            cursor.execute('SELECT user_id FROM user_sessions WHERE user_id = ?', (user_id,))
             if cursor.fetchone():
+                logger.warning(f"⚠️ Пользователь {user_id} уже в сессии")
                 return False
 
             cursor.execute(
-                "INSERT INTO user_sessions (user_id, username) VALUES (?, ?)",
+                'INSERT INTO user_sessions (user_id, username) VALUES (?, ?)',
                 (user_id, username)
             )
+            conn.commit()
+            logger.info(f"✅ Пользователь {username} добавлен в сессию")
             return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка при добавлении сессии: {e}")
+            return False
 
     def get_user_session(self, user_id):
-        """Получить имя пользователя из сессии"""
-        with self.get_connection() as conn:
+        """Получить пользователя из сессии"""
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT username FROM user_sessions WHERE user_id = ?", (user_id,))
+
+            cursor.execute('SELECT username FROM user_sessions WHERE user_id = ?', (user_id,))
             result = cursor.fetchone()
+
             return result[0] if result else None
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении сессии: {e}")
+            return None
 
     def remove_user_session(self, user_id):
         """Удалить пользователя из сессии"""
-        with self.get_connection() as conn:
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
 
-    # ======================== УПРАВЛЕНИЕ СОВЕЩАНИЯМИ ========================
+            cursor.execute('DELETE FROM user_sessions WHERE user_id = ?', (user_id,))
+            conn.commit()
+            logger.info(f"✅ Пользователь {user_id} удален из сессии")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка при удалении сессии: {e}")
+            return False
+
+    # ======================== СОВЕЩАНИЯ ========================
 
     def add_meeting(self, creator_username, date, start_time, duration_minutes, participants):
         """Добавить новое совещание"""
-        with self.get_connection() as conn:
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
 
             participants_json = json.dumps(participants)
 
-            cursor.execute("""
-                INSERT INTO meetings (creator_username, date, start_time, duration_minutes, participants)
-                VALUES (?, ?, ?, ?, ?)
-            """, (creator_username, date, start_time, duration_minutes, participants_json))
+            cursor.execute(
+                '''INSERT INTO meetings 
+                   (creator_username, date, start_time, duration_minutes, participants) 
+                   VALUES (?, ?, ?, ?, ?)''',
+                (creator_username, date, start_time, duration_minutes, participants_json)
+            )
+            conn.commit()
 
-            return cursor.lastrowid
+            meeting_id = cursor.lastrowid
+            logger.info(f"✅ Совещание {meeting_id} создано")
+            return meeting_id
+        except Exception as e:
+            logger.error(f"❌ Ошибка при создании совещания: {e}")
+            return None
 
     def get_all_meetings(self):
         """Получить все совещания"""
-        with self.get_connection() as conn:
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, creator_username, date, start_time, duration_minutes, participants
-                FROM meetings
-                ORDER BY date DESC, start_time DESC
-            """)
+
+            cursor.execute('SELECT * FROM meetings ORDER BY date, start_time')
             return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении совещаний: {e}")
+            return []
 
     def get_meetings_by_creator(self, creator_username):
-        """Получить совещания по создателю"""
-        with self.get_connection() as conn:
+        """Получить совещания создателя"""
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, creator_username, date, start_time, duration_minutes, participants
-                FROM meetings
-                WHERE creator_username = ?
-                ORDER BY date DESC, start_time DESC
-            """, (creator_username,))
+
+            cursor.execute(
+                'SELECT * FROM meetings WHERE creator_username = ? ORDER BY date, start_time',
+                (creator_username,)
+            )
             return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении совещаний: {e}")
+            return []
 
     def get_meetings_by_participant(self, participant_username):
-        """Получить совещания по участнику"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, creator_username, date, start_time, duration_minutes, participants
-                FROM meetings
-                WHERE participants LIKE ?
-                ORDER BY date DESC, start_time DESC
-            """, (f'%"{participant_username}"%',))
-            return cursor.fetchall()
-
-    def get_meeting_by_id(self, meeting_id):
-        """Получить совещание по ID"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, creator_username, date, start_time, duration_minutes, participants
-                FROM meetings
-                WHERE id = ?
-            """, (meeting_id,))
-            return cursor.fetchone()
-
-    def delete_meeting(self, meeting_id):
-        """Удалить совещание по ID"""
-        with self.get_connection() as conn:
+        """Получить совещания участника"""
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
 
-            # Удаляем уведомления
-            cursor.execute("DELETE FROM notifications WHERE meeting_id = ?", (meeting_id,))
+            # Получаем все совещания и фильтруем по участникам
+            cursor.execute('SELECT * FROM meetings ORDER BY date, start_time')
+            all_meetings = cursor.fetchall()
 
-            # Удаляем совещание
-            cursor.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
+            result = []
+            for meeting in all_meetings:
+                participants = json.loads(meeting[5])
+                if participant_username in participants:
+                    result.append(meeting)
 
-            return True
+            return result
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении совещаний участника: {e}")
+            return []
 
     def get_past_meetings(self, creator_username=None):
         """Получить прошедшие совещания"""
-        from utils import get_end_time
-        from datetime import datetime
-
-        today = datetime.now().strftime("%d.%m")
-
-        with self.get_connection() as conn:
+        try:
+            today = datetime.now().strftime("%d.%m")
+            conn = self._get_connection()
             cursor = conn.cursor()
 
             if creator_username:
-                cursor.execute("""
-                    SELECT id, creator_username, date, start_time, duration_minutes, participants
-                    FROM meetings
-                    WHERE creator_username = ?
-                    ORDER BY date ASC, start_time ASC
-                """, (creator_username,))
+                cursor.execute(
+                    'SELECT * FROM meetings WHERE creator_username = ? AND date < ? ORDER BY date DESC',
+                    (creator_username, today)
+                )
             else:
-                cursor.execute("""
-                    SELECT id, creator_username, date, start_time, duration_minutes, participants
-                    FROM meetings
-                    ORDER BY date ASC, start_time ASC
-                """)
+                cursor.execute(
+                    'SELECT * FROM meetings WHERE date < ? ORDER BY date DESC',
+                    (today,)
+                )
 
-            all_meetings = cursor.fetchall()
-            past_meetings = []
-
-            for meeting in all_meetings:
-                meeting_date = meeting[2]  # date
-
-                # Сравниваем даты (формат: DD.MM)
-                if meeting_date < today:
-                    past_meetings.append(meeting)
-
-            return past_meetings
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении прошедших совещаний: {e}")
+            return []
 
     def get_future_meetings(self, creator_username):
-        """Получить будущие совещания создателя"""
-        from datetime import datetime
-
-        today = datetime.now().strftime("%d.%m")
-
-        with self.get_connection() as conn:
+        """Получить будущие совещания"""
+        try:
+            today = datetime.now().strftime("%d.%m")
+            conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, creator_username, date, start_time, duration_minutes, participants
-                FROM meetings
-                WHERE creator_username = ?
-                ORDER BY date DESC, start_time DESC
-            """, (creator_username,))
 
-            all_meetings = cursor.fetchall()
-            future_meetings = []
+            cursor.execute(
+                'SELECT * FROM meetings WHERE creator_username = ? AND date >= ? ORDER BY date',
+                (creator_username, today)
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении будущих совещаний: {e}")
+            return []
+
+    def get_meeting_by_id(self, meeting_id):
+        """Получить совещание по ID"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT * FROM meetings WHERE id = ?', (meeting_id,))
+            return cursor.fetchone()
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении совещания: {e}")
+            return None
+
+    def delete_meeting(self, meeting_id):
+        """Удалить совещание"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            # Удаляем уведомления
+            cursor.execute('DELETE FROM notifications WHERE meeting_id = ?', (meeting_id,))
+
+            # Удаляем совещание
+            cursor.execute('DELETE FROM meetings WHERE id = ?', (meeting_id,))
+
+            conn.commit()
+            logger.info(f"✅ Совещание {meeting_id} удалено")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка при удалении совещания: {e}")
+            return False
+
+    def check_user_availability(self, username, date, start_time, duration):
+        """Проверить свободен ли пользователь"""
+        try:
+            # Парсим время
+            start_hour, start_min = map(int, start_time.split(':'))
+            duration_hours = duration // 60
+            duration_mins = duration % 60
+            end_hour = start_hour + duration_hours
+            end_min = start_min + duration_mins
+
+            if end_min >= 60:
+                end_hour += 1
+                end_min -= 60
+
+            end_time = f"{end_hour:02d}:{end_min:02d}"
+
+            # Получаем все совещания на эту дату
+            all_meetings = self.get_all_meetings()
 
             for meeting in all_meetings:
-                meeting_date = meeting[2]  # date
+                if meeting[2] != date:  # Не та дата
+                    continue
 
-                # Сравниваем даты
-                if meeting_date >= today:
-                    future_meetings.append(meeting)
+                # Проверяем участников
+                participants = json.loads(meeting[5])
+                if username not in participants:
+                    continue
 
-            return future_meetings
+                # Парсим время совещания
+                m_start = meeting[3]
+                m_start_hour, m_start_min = map(int, m_start.split(':'))
+                m_duration = meeting[4]
+                m_duration_hours = m_duration // 60
+                m_duration_mins = m_duration % 60
+                m_end_hour = m_start_hour + m_duration_hours
+                m_end_min = m_start_min + m_duration_mins
 
-    # ======================== УПРАВЛЕНИЕ УВЕДОМЛЕНИЯМИ ========================
+                if m_end_min >= 60:
+                    m_end_hour += 1
+                    m_end_min -= 60
+
+                m_end_time = f"{m_end_hour:02d}:{m_end_min:02d}"
+
+                # Проверяем пересечение времени
+                if (start_time < m_end_time and end_time > m_start):
+                    return False  # Занят
+
+            return True  # Свободен
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке доступности: {e}")
+            return True  # На случай ошибки разрешаем
+
+    # ======================== УВЕДОМЛЕНИЯ ========================
 
     def add_notification(self, meeting_id, participant_username):
-        """Добавить уведомление"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO notifications (meeting_id, participant_username)
-                VALUES (?, ?)
-            """, (meeting_id, participant_username))
-
-    def get_notifications(self, participant_username):
-        """Получить уведомления участника"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM notifications
-                WHERE participant_username = ? AND is_read = 0
-                ORDER BY created_at DESC
-            """, (participant_username,))
-            return cursor.fetchall()
-
-    def mark_notification_as_read(self, notification_id):
-        """Отметить уведомление как прочитанное"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE notifications SET is_read = 1 WHERE id = ?
-            """, (notification_id,))
-
-    # ======================== ПРОВЕРКА ДОСТУПНОСТИ ========================
-
-    def check_user_availability(self, username, date, start_time, duration_minutes):
-        """Проверить доступность пользователя в указанное время"""
-        from utils import get_end_time
-
-        with self.get_connection() as conn:
+        """Добавить уведомление участнику"""
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
 
-            # Получаем все совещания пользователя в этот день
-            cursor.execute("""
-                SELECT date, start_time, duration_minutes, participants
-                FROM meetings
-                WHERE date = ?
-            """, (date,))
-
-            meetings = cursor.fetchall()
-
-            # Новое совещание: время с start_time до end_time
-            new_end_time = get_end_time(start_time, duration_minutes)
-
-            for meeting in meetings:
-                meeting_date, meeting_start, meeting_duration, participants_json = meeting
-                participants = json.loads(participants_json)
-
-                # Если пользователь участник
-                if username in participants:
-                    meeting_end = get_end_time(meeting_start, meeting_duration)
-
-                    # Проверяем пересечение времени
-                    if not (new_end_time <= meeting_start or start_time >= meeting_end):
-                        return False
-
+            cursor.execute(
+                'INSERT INTO notifications (meeting_id, participant_username) VALUES (?, ?)',
+                (meeting_id, participant_username)
+            )
+            conn.commit()
+            logger.info(f"✅ Уведомление добавлено {participant_username}")
             return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка при добавлении уведомления: {e}")
+            return False
 
-    def get_database_size(self):
-        """Получить размер БД в байтах"""
-        import os
-        if os.path.exists(self.db_path):
-            return os.path.getsize(self.db_path)
-        return 0
+    def get_notifications(self, username):
+        """Получить уведомления пользователя"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                '''SELECT n.*, m.* FROM notifications n
+                   JOIN meetings m ON n.meeting_id = m.id
+                   WHERE n.participant_username = ? AND n.read = 0''',
+                (username,)
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении уведомлений: {e}")
+            return []
+
+    # ======================== ИНФОРМАЦИЯ ========================
 
     def get_database_info(self):
         """Получить информацию о БД"""
-        with self.get_connection() as conn:
+        try:
+            conn = self._get_connection()
             cursor = conn.cursor()
 
-            # Количество совещаний
-            cursor.execute("SELECT COUNT(*) FROM meetings")
+            cursor.execute('SELECT COUNT(*) FROM meetings')
             meetings_count = cursor.fetchone()[0]
 
-            # Количество активных сессий
-            cursor.execute("SELECT COUNT(*) FROM user_sessions")
-            sessions_count = cursor.fetchone()[0]
-
-            # Количество уведомлений
-            cursor.execute("SELECT COUNT(*) FROM notifications")
+            cursor.execute('SELECT COUNT(*) FROM notifications')
             notifications_count = cursor.fetchone()[0]
 
+            cursor.execute('SELECT COUNT(*) FROM user_sessions')
+            sessions_count = cursor.fetchone()[0]
+
+            db_size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+
             return {
-                "meetings": meetings_count,
-                "sessions": sessions_count,
-                "notifications": notifications_count,
-                "database_size": self.get_database_size()
+                'meetings': meetings_count,
+                'notifications': notifications_count,
+                'sessions': sessions_count,
+                'database_size': db_size
             }
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении информации о БД: {e}")
+            return {}
 
 
 # Глобальный экземпляр БД

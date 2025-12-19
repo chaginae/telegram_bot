@@ -1,14 +1,16 @@
-# main_with_auto_cleanup.py
-# Telegram бот для управления совещаниями (версия с автоматическим удалением старых совещаний)
+# main_telebot_render.py
+# Telegram бот для управления совещаниями (версия для Render.com)
 
 import telebot
 from telebot import types
 import logging
-from datetime import datetime
-import json
+import os
 import threading
 import time
+from datetime import datetime
+import json
 
+# Импорты из локальных модулей
 from config import USERS_DB, CREATORS, MEETING_TIMES, MEETING_DURATIONS
 from database import db
 from auto_cleanup import cleanup
@@ -17,18 +19,28 @@ from utils import (
     get_end_time, format_participants_list
 )
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ======================== КОНФИГУРАЦИЯ ========================
 
-# Токен бота (ВАШ ТОКЕН ЗДЕСЬ)
-TELEGRAM_TOKEN = "7263661310:AAFXxJ0qeifSOJA9PM0MI4H81efQ2LoLxrI"
+# Получаем токен из переменных окружения
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ ОШИБКА: Не установлена переменная окружения TELEGRAM_TOKEN!")
+
+# Логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Инициализация бота
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # Хранилище временных данных пользователя
 user_data = {}
+
+logger.info("✅ Бот инициализирован успешно")
 
 
 # ======================== КОМАНДЫ ========================
@@ -762,13 +774,13 @@ def main():
 
     # Запускаем автоочистку
     cleanup.start()
+    logger.info("🧹 Автоочистка активирована - старые совещания удаляются каждый час")
 
     # Создаем поток для бота
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
     logger.info("✅ Бот запущен в фоновом режиме")
-    logger.info("🧹 Автоочистка активирована - старые совещания удаляются каждый час")
     logger.info("💡 Чтобы остановить, нажми Ctrl+C")
 
     # Основной поток остается в работе
